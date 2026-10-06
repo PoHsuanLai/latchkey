@@ -4,29 +4,21 @@
 //! an advisory lock conflicts between two file descriptions in the same process just as it does
 //! between two processes. Two claims are not like that, and they are the two the crate is sold
 //! on: that a *killed* agent locks nobody out, and that a client can start one it did not build.
-//! Neither can be shown without a second process, so these tests drive `examples/agent.rs`.
+//! Neither can be shown without a second process, so these tests drive `tests/support/agent.rs`.
 
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Where `cargo` puts the example this drives.
+/// The agent binary the tests drive.
 ///
-/// Derived from the test binary's own path — `target/<profile>/deps/across_processes-<hash>` —
-/// because there is no `CARGO_BIN_EXE_` for examples. `cargo test` builds examples, so by the
-/// time this runs it is there; if it is not, saying so beats a confusing spawn failure.
+/// `cargo test` builds it and bakes its path in through `CARGO_BIN_EXE_`. A nextest archive is
+/// extracted somewhere else, so nextest sets `NEXTEST_BIN_EXE_` at run time to the remapped path;
+/// that wins when present. A binary that is not where either says fails loudly, not skips.
 fn the_example() -> std::path::PathBuf {
-    let here = std::env::current_exe().expect("the test binary knows where it is");
-    let built = here
-        .parent()
-        .and_then(|deps| deps.parent())
-        .expect("target/<profile>/deps/<test>")
-        .join("examples")
-        .join(if cfg!(windows) { "agent.exe" } else { "agent" });
-    assert!(
-        built.exists(),
-        "{} is missing; run `cargo test` rather than the test binary directly",
-        built.display()
-    );
+    let built = std::env::var_os("NEXTEST_BIN_EXE_latchkey-test-agent")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_latchkey-test-agent").into());
+    assert!(built.exists(), "{} is missing", built.display());
     built
 }
 
