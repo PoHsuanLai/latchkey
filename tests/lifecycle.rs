@@ -282,3 +282,40 @@ mod finding_or_starting {
         );
     }
 }
+
+#[cfg(unix)]
+mod a_descriptor_of_its_own {
+    use super::*;
+    use std::io::Read;
+    use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn a_connection_handed_over_as_a_descriptor_is_the_same_conversation_and_can_be_non_blocking() {
+        // What an async client does with it: take the descriptor, make it non-blocking, and talk.
+        // The agent must not notice that the bytes now come from somewhere else.
+        let dir = tempfile::tempdir().unwrap();
+        let agent = agent_in(dir.path());
+        let door = agent.listen().unwrap();
+        let knocked = agent.connect().unwrap().expect("somebody is home");
+        let mut client = UnixStream::from(latchkey::into_fd(knocked).unwrap());
+        let mut served = door.accept().unwrap();
+
+        client.write_all(b"ping\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(&mut served).read_line(&mut line).unwrap();
+        assert_eq!(line, "ping\n");
+
+        client.set_nonblocking(true).unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            client.read(&mut buf).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "nothing sent yet, and a non-blocking read says so rather than waiting"
+        );
+        served.write_all(b"pong\n").unwrap();
+        client.set_nonblocking(false).unwrap();
+        let mut back = String::new();
+        BufReader::new(&mut client).read_line(&mut back).unwrap();
+        assert_eq!(back, "pong\n");
+    }
+}

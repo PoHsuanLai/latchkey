@@ -10,6 +10,31 @@ use interprocess::local_socket::{GenericFilePath, GenericNamespaced, ListenerOpt
 /// that has to know which one it got is a caller writing the code this crate exists to delete.
 pub type Stream = interprocess::local_socket::Stream;
 
+/// The connection's file descriptor, for a caller that drives it itself rather than through
+/// [`Stream`]'s blocking `Read + Write`: an async runtime, which wants a non-blocking socket it can
+/// register (`set_nonblocking(true)` on `std::os::unix::net::UnixStream::from(fd)`, then
+/// `tokio::net::UnixStream::from_std`), or a process that passes the descriptor on with
+/// `SCM_RIGHTS`.
+///
+/// Unix only, because only a Unix socket has a descriptor to give. Connecting is never the part
+/// that waits: a Unix domain socket's `connect` completes against the listener's backlog at once,
+/// so [`Agent::connect`](crate::Agent::connect) followed by this is already the non-blocking
+/// connect, and nothing here needs a runtime of its own.
+///
+/// The descriptor is a duplicate of the stream's, and the stream is closed: the peer sees one
+/// connection throughout, now owned by whoever holds the descriptor.
+#[cfg(unix)]
+pub fn into_fd(stream: Stream) -> std::io::Result<std::os::fd::OwnedFd> {
+    #[allow(unreachable_patterns)]
+    match stream {
+        Stream::UdSocket(socket) => Ok(socket.inner().try_clone()?.into()),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this local socket is not a Unix domain socket",
+        )),
+    }
+}
+
 /// Listening, and the proof that we are the only one doing so.
 ///
 /// The listener and the lock are one value because their lifetimes are one fact: while this

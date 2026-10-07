@@ -94,6 +94,8 @@ pub mod serve;
 
 pub use address::{Address, Endpoint, Environment, Host, OwnedEnvironment, address_on, here};
 pub use find::spawn;
+#[cfg(unix)]
+pub use serve::into_fd;
 pub use serve::{Listening, Stream};
 
 use std::path::{Path, PathBuf};
