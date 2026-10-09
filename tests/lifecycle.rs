@@ -100,24 +100,23 @@ mod one_per_user {
         // The other half: an agent that has stopped must not lock its successor out. This is the
         // ordinary exit; `SIGKILL` is the same mechanism, because the kernel drops the lock with
         // the process whether or not any destructor ran.
+        //
+        // Step 1 is the agent stopping. Step 2 is the lock file it leaves behind (folded in from
+        // `the_lock_file_is_left_behind_on_purpose`). Step 3 is the successor, which must still
+        // get in past that leftover file.
         let dir = tempfile::tempdir().unwrap();
         let agent = agent_in(dir.path());
         drop(agent.listen().unwrap());
-        agent.listen().expect("the lock went with it");
-    }
-
-    #[test]
-    fn the_lock_file_is_left_behind_on_purpose() {
-        // Unlinking it would reintroduce the race in a worse form: a second process can hold the
-        // lock on the very inode being deleted while a third locks a fresh file at the same
-        // path, and the kernel is right both times. An empty file is the cheaper answer.
-        let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
-        drop(agent.listen().unwrap());
-        assert!(agent.address().lock.exists());
+        // Unlinking the lock file would reintroduce the race in a worse form: a second process can
+        // hold the lock on the very inode being deleted while a third locks a fresh file at the
+        // same path, and the kernel is right both times. An empty file is the cheaper answer.
+        assert!(
+            agent.address().lock.exists(),
+            "step 2 (the lock file is left behind on purpose)"
+        );
         agent
             .listen()
-            .expect("a leftover lock file locks nobody out");
+            .expect("step 3 (the lock went with it, and a leftover lock file locks nobody out)");
     }
 
     #[test]
@@ -254,7 +253,7 @@ mod finding_or_starting {
         // gives up: the second can be retried by a person who can also read why.
         let dir = tempfile::tempdir().unwrap();
         let refused = agent_in(dir.path())
-            .connect_or_start(|| Ok(()), Duration::from_millis(300))
+            .connect_or_start(|| Ok(()), Duration::from_millis(50))
             .expect_err("nothing ever listened");
         assert!(matches!(refused, Error::NeverAnswered(_)), "{refused}");
     }
