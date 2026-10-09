@@ -4,53 +4,12 @@
 //! being checked are the ones the kernel provides — and a fake filesystem would be checking this
 //! crate's idea of locking rather than the one it is built on.
 
+use crate::helpers::{agent_in, unique_name};
 #[cfg(unix)]
 use latchkey::Endpoint;
-use latchkey::{Agent, Environment, Error};
+use latchkey::{Agent, Error};
 use std::io::{BufRead, BufReader, Write};
 use std::time::Duration;
-
-/// An agent addressed inside a temporary directory, so tests never touch a real one.
-///
-/// `latchkey::here()` rather than a fixed `Host`: this file is about what the kernel does, so it
-/// has to run under the rules of the machine it is on. The *rules themselves* are tested for all
-/// three platforms in `address.rs`, where they are a pure function and need no kernel at all.
-fn agent_in(dir: &std::path::Path) -> Agent {
-    let dir = dir.as_os_str();
-    Agent::in_environment(
-        &unique_name(),
-        latchkey::here(),
-        &Environment {
-            runtime_dir: Some(dir),
-            tmpdir: Some(dir),
-            local_app_data: Some(dir),
-            user: Some("test"),
-            ..Environment::default()
-        },
-    )
-    .unwrap()
-}
-
-/// A name no other test, and no other run, will use.
-///
-/// A temporary directory is *not* enough isolation, and finding that out is what this file cost.
-/// On Unix the endpoint lives inside the directory, so a per-test directory separates everything.
-/// On Windows the endpoint is a named pipe, whose namespace is machine-wide and derives only
-/// from the agent's name and the user — so every test here addressed `\\.\pipe\test-test`
-/// while holding a different lock file, and thirteen agents fought over one door. The Unix suite
-/// passed throughout; the Windows one hung.
-///
-/// The pid keeps concurrent `cargo test` runs apart, and the counter keeps this run's tests
-/// apart from each other.
-fn unique_name() -> String {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    format!(
-        "t{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )
-}
 
 /// The socket, where there is one. `None` on Windows, where the endpoint is a pipe name.
 #[cfg(unix)]
@@ -70,7 +29,7 @@ mod one_per_user {
         // anything holding state — a mailbox, a build cache, a connection pool — is two writers
         // and no arbitration.
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
+        let agent = agent_in(dir.path(), &unique_name(), "test");
         let _first = agent.listen().expect("the first one becomes the agent");
         assert!(matches!(agent.listen(), Err(Error::AlreadyRunning)));
     }
@@ -86,7 +45,7 @@ mod one_per_user {
         // any check that reads the filesystem would say the coast is clear, and the second agent
         // must still be refused.
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
+        let agent = agent_in(dir.path(), &unique_name(), "test");
         let _first = agent.listen().unwrap();
         let socket = socket_of(&agent).expect("unix");
         std::fs::remove_file(&socket).unwrap();
@@ -105,7 +64,7 @@ mod one_per_user {
         // `the_lock_file_is_left_behind_on_purpose`). Step 3 is the successor, which must still
         // get in past that leftover file.
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
+        let agent = agent_in(dir.path(), &unique_name(), "test");
         drop(agent.listen().unwrap());
         // Unlinking the lock file would reintroduce the race in a worse form: a second process can
         // hold the lock on the very inode being deleted while a third locks a fresh file at the
@@ -122,7 +81,7 @@ mod one_per_user {
     #[test]
     fn asking_whether_one_is_running_does_not_start_one() {
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
+        let agent = agent_in(dir.path(), &unique_name(), "test");
         assert!(!agent.is_running());
         let _live = agent.listen().unwrap();
         assert!(agent.is_running());
@@ -150,7 +109,7 @@ mod the_door {
         // The whole point, in one test: the caller writes `Read`/`Write` and never learns which
         // transport carried it.
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
+        let agent = agent_in(dir.path(), &unique_name(), "test");
         let served = echoing(&agent);
 
         let mut knocked = agent.connect().unwrap().expect("somebody is home");
@@ -167,7 +126,12 @@ mod the_door {
         // The usual reply to "no agent" is to start one, so it has to be distinguishable from a
         // failure without reading an error message.
         let dir = tempfile::tempdir().unwrap();
-        assert!(agent_in(dir.path()).connect().unwrap().is_none());
+        assert!(
+            agent_in(dir.path(), &unique_name(), "test")
+                .connect()
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -176,7 +140,7 @@ mod the_door {
         // The awkward case, and the only one that needs care: the process was killed, the file
         // is still there, and it looks exactly like an agent until you try to talk to it.
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
+        let agent = agent_in(dir.path(), &unique_name(), "test");
         let socket = socket_of(&agent).expect("unix");
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         // A raw listener, because this crate's guard unlinks on the way out and a killed process
@@ -200,7 +164,7 @@ mod the_door {
         // program has to remember this — it is the guard's `Drop`, so every ordinary exit path
         // is covered by construction rather than by care.
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
+        let agent = agent_in(dir.path(), &unique_name(), "test");
         let door = agent.listen().unwrap();
         let socket = socket_of(&agent).expect("unix");
         assert!(socket.exists());
@@ -217,7 +181,7 @@ mod finding_or_starting {
         // The property every `foo status` depends on: asking twice must not start a second
         // agent doing the same work twice.
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
+        let agent = agent_in(dir.path(), &unique_name(), "test");
         let _door = agent.listen().unwrap();
 
         agent
@@ -231,7 +195,7 @@ mod finding_or_starting {
     #[test]
     fn with_none_running_it_starts_one_and_waits() {
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
+        let agent = agent_in(dir.path(), &unique_name(), "test");
         let starting = agent.clone();
         let mut held = None;
 
@@ -252,7 +216,7 @@ mod finding_or_starting {
         // A client blocked for ever on an agent that failed to start is worse than one that
         // gives up: the second can be retried by a person who can also read why.
         let dir = tempfile::tempdir().unwrap();
-        let refused = agent_in(dir.path())
+        let refused = agent_in(dir.path(), &unique_name(), "test")
             .connect_or_start(|| Ok(()), Duration::from_millis(50))
             .expect_err("nothing ever listened");
         assert!(matches!(refused, Error::NeverAnswered(_)), "{refused}");
@@ -267,7 +231,7 @@ mod finding_or_starting {
         // on demand, so what is asserted is the rule that removes it: a client leaves the
         // filesystem exactly as it found it, and clearing is `listen`'s job, under the lock.
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
+        let agent = agent_in(dir.path(), &unique_name(), "test");
         let socket = socket_of(&agent).expect("unix");
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
@@ -293,7 +257,7 @@ mod a_descriptor_of_its_own {
         // What an async client does with it: take the descriptor, make it non-blocking, and talk.
         // The agent must not notice that the bytes now come from somewhere else.
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_in(dir.path());
+        let agent = agent_in(dir.path(), &unique_name(), "test");
         let door = agent.listen().unwrap();
         let knocked = agent.connect().unwrap().expect("somebody is home");
         let mut client = UnixStream::from(latchkey::into_fd(knocked).unwrap());

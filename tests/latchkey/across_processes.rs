@@ -6,6 +6,7 @@
 //! on: that a *killed* agent locks nobody out, and that a client can start one it did not build.
 //! Neither can be shown without a second process, so these tests drive `tests/support/agent.rs`.
 
+use crate::helpers::{agent_in, unique_name};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -52,23 +53,6 @@ fn demo(world: &World, command: &str) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     it
-}
-
-/// A name no other test, and no other run, will use.
-///
-/// A temporary directory is not enough isolation. On Unix the endpoint lives inside it, so a
-/// per-test directory separates everything; on Windows the endpoint is a named pipe whose
-/// namespace is machine-wide and derives only from the name and the user. All three tests here
-/// addressed `\\.\pipe\demo-demo` while holding three different locks, so they served each
-/// other's clients — one failed and one hung for an hour and forty minutes.
-fn unique_name() -> String {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    format!(
-        "d{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )
 }
 
 /// Run a client and give back what it printed, without waiting on a pipe.
@@ -118,19 +102,7 @@ impl World {
 
 /// The same agent the example addresses, so the test can knock on the door itself.
 fn agent_at(world: &World) -> latchkey::Agent {
-    let dir = world.path().as_os_str();
-    latchkey::Agent::in_environment(
-        &world.name,
-        latchkey::here(),
-        &latchkey::Environment {
-            runtime_dir: Some(dir),
-            tmpdir: Some(dir),
-            local_app_data: Some(dir),
-            user: Some("demo"),
-            ..latchkey::Environment::default()
-        },
-    )
-    .unwrap()
+    agent_in(world.path(), &world.name, "demo")
 }
 
 /// Wait until something actually answers.
