@@ -22,6 +22,10 @@ interprocess = "2.4"
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "net", "process"] }
 
+# Windows only: the pipe's security descriptor, which `interprocess` takes as a wide C string.
+[target.'cfg(windows)'.dependencies]
+widestring = "1"
+
 [dev-dependencies]
 tempfile = "3"
 # The test agent below is built only with this feature. Naming it here switches it on for this

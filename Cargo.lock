@@ -68,6 +68,7 @@ dependencies = [
  "latchkey",
  "rustix",
  "tempfile",
+ "widestring",
 ]
 
 [[package]]

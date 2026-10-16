@@ -140,6 +140,25 @@ fn options(endpoint: &Endpoint) -> Result<ListenerOptions<'_>, Error> {
     // live one's, and deleting the wrong one is silent. The lock above already decided, and by
     // the time we get here the socket has been cleared under it.
     let options = options.reclaim_name(false);
+    // A pipe, unlike the socket's directory, has no owner check: the default descriptor lets any
+    // local user connect. Only the pipe's owner, whose rights `OW` names, may: the creating user,
+    // or for an elevated server the Administrators group its token owns objects as, so a
+    // non-elevated client is refused rather than a stranger let in.
+    #[cfg(windows)]
+    let options = {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt;
+        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+        let sddl =
+            widestring::U16CString::from_str("D:P(A;;GA;;;OW)").map_err(|e| Error::Listen {
+                endpoint: endpoint.clone(),
+                cause: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+            })?;
+        let descriptor = SecurityDescriptor::deserialize(&sddl).map_err(|e| Error::Listen {
+            endpoint: endpoint.clone(),
+            cause: e,
+        })?;
+        options.security_descriptor(descriptor)
+    };
     Ok(match endpoint {
         Endpoint::Socket(path) => options.name(
             path.as_os_str()
