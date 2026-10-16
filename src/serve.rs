@@ -47,8 +47,8 @@ pub struct Listening {
     /// The socket to unlink on the way out. `None` on Windows, where a pipe is not a file and
     /// vanishes with the process that made it.
     socket: Option<std::path::PathBuf>,
-    /// Never read. Held because dropping it releases the lock.
-    _lock: lock::Held,
+    /// Held because dropping it releases the lock, and asked whether the lock file is still there.
+    lock: lock::Held,
 }
 
 impl Listening {
@@ -60,6 +60,12 @@ impl Listening {
     /// Every client, forever, as an iterator.
     pub fn incoming(&self) -> impl Iterator<Item = std::io::Result<Stream>> + '_ {
         std::iter::repeat_with(move || self.accept())
+    }
+
+    /// Is the lock file still the one this agent holds? An agent should ask now and then and stop
+    /// when it is [`Standing::Displaced`](lock::Standing::Displaced); see [`lock::Held::standing`].
+    pub fn standing(&self) -> lock::Standing {
+        self.lock.standing()
     }
 
     /// Where this agent is listening, for printing or passing to a child.
@@ -92,7 +98,9 @@ pub fn listen(at: &Address) -> Result<Listening, Error> {
     let socket = match &at.endpoint {
         Endpoint::Socket(path) => {
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| Error::at(parent, e))?;
+                // Already made and checked by the lock; checked again because this is where the
+                // socket goes, and a directory that is not ours must never receive it.
+                lock::private_dir(parent)?;
             }
             // Past the lock, so a socket still here was left by a process that is gone: no live
             // agent could be behind it, because a live agent would still hold the lock. This is
@@ -120,7 +128,7 @@ pub fn listen(at: &Address) -> Result<Listening, Error> {
     Ok(Listening {
         listener,
         socket,
-        _lock: held,
+        lock: held,
     })
 }
 

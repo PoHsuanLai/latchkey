@@ -78,7 +78,7 @@ impl Environment<'static> {
     /// values to live. [`crate::Agent::address`] does this for you.
     pub fn read() -> OwnedEnvironment {
         OwnedEnvironment {
-            runtime_dir: std::env::var_os("XDG_RUNTIME_DIR"),
+            runtime_dir: std::env::var_os("XDG_RUNTIME_DIR").or_else(runtime_dir_by_uid),
             tmpdir: std::env::var_os("TMPDIR").or_else(|| std::env::var_os("TEMP")),
             home: std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")),
             local_app_data: std::env::var_os("LOCALAPPDATA"),
@@ -87,6 +87,26 @@ impl Environment<'static> {
                 .ok(),
         }
     }
+}
+
+/// This user's runtime directory found by who they are, for a session that never set
+/// `XDG_RUNTIME_DIR` (an ssh login without a session manager is the usual one).
+///
+/// `/run/user/<uid>` is where the login manager makes it, so it is used when it is a directory
+/// this user owns. Without it the address falls back to `$HOME/.cache`, which a cache cleaner is
+/// allowed to empty; this keeps that fallback for the machines that really have nothing better.
+#[cfg(target_os = "linux")]
+fn runtime_dir_by_uid() -> Option<std::ffi::OsString> {
+    use std::os::unix::fs::MetadataExt as _;
+    let uid = rustix::process::getuid().as_raw();
+    let path = PathBuf::from(format!("/run/user/{uid}"));
+    let meta = std::fs::metadata(&path).ok()?;
+    (meta.is_dir() && meta.uid() == uid).then(|| path.into_os_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn runtime_dir_by_uid() -> Option<std::ffi::OsString> {
+    None
 }
 
 /// The real environment, owned, so an [`Environment`] can borrow from it.

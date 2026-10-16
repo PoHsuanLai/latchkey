@@ -83,8 +83,75 @@ mod one_per_user {
         let dir = tempfile::tempdir().unwrap();
         let agent = agent_in(dir.path(), &unique_name(), "test");
         assert!(!agent.is_running());
+        assert!(
+            !agent.address().lock.exists(),
+            "asking creates nothing: it must not take the lock a starting agent is about to ask for"
+        );
         let _live = agent.listen().unwrap();
         assert!(agent.is_running());
+    }
+}
+
+#[cfg(unix)]
+mod trusted_directories {
+    use super::*;
+    use latchkey::lock::Standing;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+    fn home_of(agent: &Agent) -> std::path::PathBuf {
+        agent.address().lock.parent().unwrap().to_path_buf()
+    }
+
+    #[test]
+    fn a_symlinked_agent_directory_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let name = unique_name();
+        symlink(elsewhere.path(), dir.path().join(&name)).unwrap();
+        let agent = agent_in(dir.path(), &name, "test");
+        assert!(matches!(agent.listen(), Err(Error::Unsafe(_))));
+    }
+
+    #[test]
+    fn a_loose_directory_of_ours_is_tightened() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = agent_in(dir.path(), &unique_name(), "test");
+        let home = home_of(&agent);
+        std::fs::create_dir(&home).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _door = agent.listen().unwrap();
+        let mode = std::fs::metadata(&home).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn a_symlinked_lock_file_is_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let agent = agent_in(dir.path(), &unique_name(), "test");
+        let home = home_of(&agent);
+        std::fs::create_dir(&home).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let target = elsewhere.path().join("target");
+        symlink(&target, &agent.address().lock).unwrap();
+        assert!(matches!(agent.listen(), Err(Error::Io { .. })));
+        assert!(!target.exists(), "nothing was created through the link");
+    }
+
+    #[test]
+    fn an_agent_whose_lock_file_was_removed_or_replaced_knows_it_is_displaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = agent_in(dir.path(), &unique_name(), "test");
+        let door = agent.listen().unwrap();
+        assert_eq!(door.standing(), Standing::Ours);
+        std::fs::remove_file(&agent.address().lock).unwrap();
+        assert_eq!(door.standing(), Standing::Displaced);
+        std::fs::write(&agent.address().lock, b"").unwrap();
+        assert_eq!(
+            door.standing(),
+            Standing::Displaced,
+            "a fresh file at the path is not the one this agent holds"
+        );
     }
 }
 

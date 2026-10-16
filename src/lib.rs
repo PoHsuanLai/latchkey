@@ -167,16 +167,21 @@ impl Agent {
         find::connect_or_start(&self.address, start, wait)
     }
 
-    /// Is one running? Asked by taking the lock and giving it straight back.
+    /// Is one running? Asked by knocking, which takes nothing and creates nothing.
+    ///
+    /// This used to take the real lock and give it straight back, and for those microseconds a
+    /// starting agent that asked for the lock was told another one was running and exited, leaving
+    /// nobody home. A knock cannot do that. The price is that the agent sees one client that
+    /// connects and closes without a word, so an agent must treat an empty connection as nothing.
     ///
     /// Racy by nature — the answer can be stale before it is returned — so it is for reporting
     /// to a person, never for deciding whether to start. [`Agent::listen`] is that decision, and
-    /// it is one step rather than two for exactly this reason.
+    /// it is one step rather than two for exactly this reason. An agent that is between taking
+    /// the lock and opening its door reads as not running for that moment.
     pub fn is_running(&self) -> bool {
-        // Only `AlreadyRunning` counts. A directory that cannot be created, or a filesystem that
-        // will not lock, is a different problem and answering "yes, one is running" to it would
-        // send the caller looking for an agent that is not there.
-        matches!(lock::take(&self.address.lock), Err(Error::AlreadyRunning))
+        // A reply or a busy answer is proof of life. Anything else, including a socket that
+        // belongs to another user, is "no": the caller is not looking for that agent.
+        matches!(self.connect(), Ok(Some(_)) | Err(Error::Busy))
     }
 }
 
@@ -224,6 +229,11 @@ pub enum Error {
     NoSelf(std::io::Error),
     /// The agent process would not start.
     CannotSpawn(std::io::Error),
+    /// A directory or file the agent's safety rests on is not this user's alone: it belongs to
+    /// someone else, is a symlink, or is not what it should be. Nothing was started or trusted.
+    Unsafe(PathBuf),
+    /// The socket answered, but the process behind it is another user's. Nothing was sent.
+    WrongOwner(Endpoint),
 }
 
 impl Error {
@@ -264,6 +274,17 @@ impl std::fmt::Display for Error {
             ),
             Error::NoSelf(cause) => write!(f, "cannot find this binary: {cause}"),
             Error::CannotSpawn(cause) => write!(f, "cannot start the agent: {cause}"),
+            Error::Unsafe(path) => write!(
+                f,
+                "{} is not a private directory or file of this user, so it was not used",
+                path.display()
+            ),
+            Error::WrongOwner(endpoint) => {
+                write!(
+                    f,
+                    "{endpoint} is served by another user, so it was not used"
+                )
+            }
         }
     }
 }

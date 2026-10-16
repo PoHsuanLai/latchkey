@@ -30,7 +30,7 @@
 //! stays. It is empty, it lives beside the socket, and leaving it there costs an inode.
 
 use crate::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Proof that this process is the agent.
 ///
@@ -38,40 +38,143 @@ use std::path::Path;
 /// releases the lock and lets the next one in.
 #[derive(Debug)]
 pub struct Held {
-    /// Never read. Open because dropping it releases the lock, which is the entire point.
-    _file: std::fs::File,
+    /// Open because dropping it releases the lock, which is the entire point. Also read by
+    /// [`Held::standing`], to ask whether the path still names this very file.
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+/// Whether the lock file at the path is still the one this agent holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Standing {
+    /// The path names the file this agent holds the lock on.
+    Ours,
+    /// The path is gone, or names another file (a cache cleaner ran, or someone replaced it). A
+    /// new agent would lock the new file and run beside this one, so this agent should stop.
+    Displaced,
+}
+
+impl Held {
+    /// Is the lock file still where this agent locked it?
+    ///
+    /// The lock belongs to a file, not to a path, and this crate never deletes the file — but
+    /// something else can: a cache cleaner, `rm -rf ~/.cache`, a tidy-minded person. The next
+    /// client would then create a fresh file, lock it without conflict and start a second agent.
+    /// An agent that calls this now and then (once a minute is plenty) and exits on
+    /// [`Standing::Displaced`] turns that from two agents for ever into a short overlap.
+    pub fn standing(&self) -> Standing {
+        same_file(&self.file, &self.path)
+    }
+}
+
+#[cfg(unix)]
+fn same_file(file: &std::fs::File, path: &Path) -> Standing {
+    use std::os::unix::fs::MetadataExt as _;
+    match (file.metadata(), std::fs::symlink_metadata(path)) {
+        (Ok(held), Ok(there)) if held.dev() == there.dev() && held.ino() == there.ino() => {
+            Standing::Ours
+        }
+        _ => Standing::Displaced,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_file(_file: &std::fs::File, _path: &Path) -> Standing {
+    // Windows locks by handle in a per-user directory a cleaner does not visit.
+    Standing::Ours
 }
 
 /// Take the lock, or report who has it.
 ///
 /// Creates the parent directory, `0700` on Unix, because on the socket platforms the directory's
 /// permissions are the whole of the authentication: an agent any local process could talk to
-/// would be an agent any local process could use.
+/// would be an agent any local process could use. A directory that already exists is trusted only
+/// if this user owns it (see [`private_dir`]).
 pub fn take(path: &Path) -> Result<Held, Error> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| Error::at(parent, e))?;
-        owner_only(parent);
+        private_dir(parent)?;
     }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|e| Error::at(path, e))?;
+    let file = open_lock(path)?;
     owner_only(path);
     match file.try_lock() {
-        Ok(()) => Ok(Held { _file: file }),
+        Ok(()) => Ok(Held {
+            file,
+            path: path.to_path_buf(),
+        }),
         Err(std::fs::TryLockError::WouldBlock) => Err(Error::AlreadyRunning),
         Err(std::fs::TryLockError::Error(e)) => Err(Error::at(path, e)),
     }
 }
 
+/// Open the lock file, creating it owner-only. On Unix a symlink at the path is refused rather than
+/// followed, and a file this user does not own is not used.
+#[cfg(unix)]
+fn open_lock(path: &Path) -> Result<std::fs::File, Error> {
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(path)
+        .map_err(|e| Error::at(path, e))?;
+    let meta = file.metadata().map_err(|e| Error::at(path, e))?;
+    if meta.uid() != rustix::process::geteuid().as_raw() {
+        return Err(Error::Unsafe(path.to_path_buf()));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_lock(path: &Path) -> Result<std::fs::File, Error> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| Error::at(path, e))
+}
+
+/// Make `dir` exist as a directory only this user can enter, or say why it cannot be trusted.
+///
+/// Created `0700` from the start (so there is no moment it is wider). One that already exists must
+/// be a real directory, not a symlink, owned by this user: a directory somebody else made is
+/// somebody else's, whatever its mode says now, and an agent run inside it would hand its door
+/// to them. A directory this user owns that is looser than `0700` is tightened.
+#[cfg(unix)]
+pub(crate) fn private_dir(dir: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| Error::at(dir, e))?;
+    let meta = std::fs::symlink_metadata(dir).map_err(|e| Error::at(dir, e))?;
+    if !meta.is_dir() || meta.uid() != rustix::process::geteuid().as_raw() {
+        return Err(Error::Unsafe(dir.to_path_buf()));
+    }
+    if meta.mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| Error::at(dir, e))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn private_dir(dir: &Path) -> Result<(), Error> {
+    // Windows inherits the ACL of `%LOCALAPPDATA%`, which is already per-user.
+    std::fs::create_dir_all(dir).map_err(|e| Error::at(dir, e))
+}
+
 /// Owner-only, where the platform has such a notion.
 ///
-/// Best effort on purpose: a filesystem that cannot express it — a FAT-formatted volume, a
-/// container bind mount — should not stop the agent starting. Where it works it is the
-/// authentication; where it does not, the enclosing directory usually still is.
+/// Best effort on purpose, and only for files: a filesystem that cannot express it — a FAT-formatted
+/// volume, a container bind mount — should not stop the agent starting. The directory is the
+/// authentication and is checked hard by [`private_dir`]; this is the belt on top of those braces.
 #[cfg(unix)]
 pub(crate) fn owner_only(path: &Path) {
     use std::os::unix::fs::PermissionsExt as _;

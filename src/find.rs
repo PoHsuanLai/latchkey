@@ -61,7 +61,10 @@ pub fn connect(at: &Address) -> Result<Option<Stream>, Error> {
         .connect_sync();
 
     match reached {
-        Ok(stream) => Ok(Some(stream)),
+        Ok(stream) => {
+            same_owner(&stream, &at.endpoint)?;
+            Ok(Some(stream))
+        }
         // The ways "nobody is home" arrives. `ConnectionRefused` is what a socket whose listener
         // has gone answers; `NotFound` is a race with an agent tidying on the way out, and the
         // name a Windows pipe gives when it was never created at all.
@@ -85,6 +88,38 @@ pub fn connect(at: &Address) -> Result<Option<Stream>, Error> {
             cause: e,
         }),
     }
+}
+
+/// Refuse a socket whose other end is another user's process.
+///
+/// The directory's permissions keep other users out of the path, but an `XDG_RUNTIME_DIR` aimed at
+/// a shared directory is not this crate's to prevent, and a client that wrote credentials to the
+/// wrong user's listener could not take them back. So the kernel is asked who is on the other end
+/// (`SO_PEERCRED`) before anything is sent. Linux only: other Unixes keep the directory check.
+#[cfg(target_os = "linux")]
+fn same_owner(stream: &Stream, endpoint: &Endpoint) -> Result<(), Error> {
+    #[allow(unreachable_patterns)]
+    match stream {
+        Stream::UdSocket(socket) => {
+            let peer = rustix::net::sockopt::socket_peercred(socket.inner()).map_err(|e| {
+                Error::Connect {
+                    endpoint: endpoint.clone(),
+                    cause: e.into(),
+                }
+            })?;
+            if peer.uid == rustix::process::geteuid() {
+                Ok(())
+            } else {
+                Err(Error::WrongOwner(endpoint.clone()))
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn same_owner(_stream: &Stream, _endpoint: &Endpoint) -> Result<(), Error> {
+    Ok(())
 }
 
 /// "Someone is home but cannot come to the door."
@@ -205,7 +240,22 @@ pub fn spawn(args: &[&str]) -> Result<(), Error> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     detach(&mut command);
-    command.spawn().map(|_| ()).map_err(Error::CannotSpawn)
+    let child = command.spawn().map_err(Error::CannotSpawn)?;
+    reap(child);
+    Ok(())
+}
+
+/// Wait for the agent in a thread of its own, so a client that outlives it does not keep a zombie.
+///
+/// The thread ends when the agent does; a client that exits first takes the thread with it and
+/// the agent is adopted by init, which reaps it. Failing to start the thread costs only that
+/// zombie, so it is not an error.
+fn reap(mut child: std::process::Child) {
+    let _ = std::thread::Builder::new()
+        .name("latchkey-reap".to_owned())
+        .spawn(move || {
+            let _ = child.wait();
+        });
 }
 
 /// Cut the agent loose from the console that started it.
@@ -222,7 +272,15 @@ fn detach(command: &mut std::process::Command) {
     command.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
 }
 
-/// Nothing to do: on Unix the child already outlives its parent, and `Stdio::null` has already
-/// severed the three handles that matter. Pipes are `CLOEXEC`, so nothing else is inherited.
-#[cfg(not(windows))]
+/// A process group of its own. The child already outlives its parent, and `Stdio::null` has
+/// severed the three handles that matter (pipes are `CLOEXEC`, so nothing else is inherited), but
+/// in the client's group it would also receive the client's Ctrl-C: the first command a person
+/// interrupts would kill the agent every later command wants.
+#[cfg(unix)]
+fn detach(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt as _;
+    command.process_group(0);
+}
+
+#[cfg(not(any(unix, windows)))]
 fn detach(_command: &mut std::process::Command) {}

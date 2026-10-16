@@ -16,8 +16,21 @@ readme = "README.md"
 # was solved; re-implementing it would be the mistake this crate exists to avoid making twice.
 interprocess = "2.4"
 
+# Unix only, and only for what `std` cannot say safely: who this process is, who the other end of a
+# socket is, and `O_NOFOLLOW`. Checking the owner of the directory and of the peer is what makes
+# "the directory is the authentication" true rather than hoped.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "net", "process"] }
+
 [dev-dependencies]
 tempfile = "3"
+# The test agent below is built only with this feature. Naming it here switches it on for this
+# crate's own tests, while `cargo install latchkey` (no dev-dependencies) never builds it.
+latchkey = { path = ".", features = ["test-agent"] }
+
+[features]
+# Builds the `latchkey-test-agent` binary the cross-process tests drive. Not for users.
+test-agent = []
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -30,8 +43,10 @@ todo = "allow"
 # `cargo nextest archive` carries binary targets and drops examples, so the tests could not find
 # an example once the archive was extracted elsewhere. `examples/agent.rs` stays the user-facing
 # copy and includes this same source. `test = false`: it has no tests of its own.
+# `required-features`: without it `cargo install latchkey` put this binary on the user's PATH.
 [[bin]]
 name = "latchkey-test-agent"
 path = "tests/support/agent.rs"
+required-features = ["test-agent"]
 test = false
 doc = false

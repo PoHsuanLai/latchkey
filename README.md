@@ -46,6 +46,14 @@ you would be one you fought.
   `SIGKILL`, under a power cut — so there is no stale state to reap and no timeout after which a
   lock is assumed dead.
 - **A client never deletes anything.** Knocking and tidying are different jobs.
+- **The directory is private, and checked.** The agent's directory is created `0700`; one that
+  already exists must be a real directory this user owns (a symlink or another user's directory is
+  `Error::Unsafe`, never used). The lock file is opened without following links. On Linux a
+  client asks the kernel who is on the other end of the socket and refuses another user's
+  process (`Error::WrongOwner`) before it sends anything.
+- **A deleted lock file is noticed.** `Listening::standing()` says whether the lock file is still
+  the one the agent holds; an agent that checks now and then and exits on `Displaced` cannot be
+  joined by a second one after a cache cleaner ran.
 - **Every platform rule is a pure function**, so the macOS and Windows answers are tested from
   whatever machine runs `cargo test`.
 
@@ -102,7 +110,7 @@ does the arbitration.
 
 | | endpoint | lock |
 |---|---|---|
-| Linux | `$XDG_RUNTIME_DIR/<name>/agent.sock`, else `$HOME/.cache/…` | beside it |
+| Linux | `$XDG_RUNTIME_DIR/<name>/agent.sock`, else `/run/user/<uid>/…` if it is yours, else `$HOME/.cache/…` | beside it |
 | macOS | `$TMPDIR/<name>/agent.sock`, else `~/Library/Caches/…` | beside it |
 | Windows | a named pipe, `<name>-<user>` | `%LOCALAPPDATA%\<name>\agent.lock` |
 
