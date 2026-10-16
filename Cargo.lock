@@ -65,6 +65,8 @@ name = "latchkey"
 version = "0.1.0"
 dependencies = [
  "interprocess",
+ "latchkey",
+ "rustix",
  "tempfile",
 ]
 
