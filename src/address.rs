@@ -7,7 +7,7 @@
 //! true. The macOS and Windows answers below are tested from whatever machine runs `cargo test`.
 
 use crate::Error;
-use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// Which platform's rules to apply.
@@ -54,30 +54,27 @@ pub struct Address {
 /// All of it optional: every field is missing on some real system, and the rules below say what
 /// happens then instead of panicking or guessing.
 #[derive(Debug, Default, Clone)]
-pub struct Environment<'a> {
+pub struct Environment {
     /// `XDG_RUNTIME_DIR`. Linux: tmpfs, `0700`, emptied when the session ends — which is exactly
     /// the lifetime a socket wants, and the reason a stale one there cannot survive a reboot.
-    pub runtime_dir: Option<&'a OsStr>,
+    pub runtime_dir: Option<OsString>,
     /// `TMPDIR` on Unix, `TEMP` on Windows. On macOS this is per-user and private
     /// (`/var/folders/…`), which makes it the closest thing that platform has to a runtime
     /// directory.
-    pub tmpdir: Option<&'a OsStr>,
+    pub tmpdir: Option<OsString>,
     /// `HOME`, or `USERPROFILE` on Windows.
-    pub home: Option<&'a OsStr>,
+    pub home: Option<OsString>,
     /// `LOCALAPPDATA`. Windows only, and where its lock file goes.
-    pub local_app_data: Option<&'a OsStr>,
+    pub local_app_data: Option<OsString>,
     /// `USER`, or `USERNAME` on Windows. Used only to name a pipe, whose namespace is shared by
     /// every session on the machine.
-    pub user: Option<&'a str>,
+    pub user: Option<String>,
 }
 
-impl Environment<'static> {
-    /// Read the real environment.
-    ///
-    /// Returns owned strings because `Environment` borrows, and a caller needs somewhere for the
-    /// values to live. [`crate::Agent::address`] does this for you.
-    pub fn read() -> OwnedEnvironment {
-        OwnedEnvironment {
+impl Environment {
+    /// Read the real environment. [`crate::Agent::new`] does this for you.
+    pub fn read() -> Self {
+        Self {
             runtime_dir: std::env::var_os("XDG_RUNTIME_DIR").or_else(runtime_dir_by_uid),
             tmpdir: std::env::var_os("TMPDIR").or_else(|| std::env::var_os("TEMP")),
             home: std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")),
@@ -96,7 +93,7 @@ impl Environment<'static> {
 /// this user owns. Without it the address falls back to `$HOME/.cache`, which a cache cleaner is
 /// allowed to empty; this keeps that fallback for the machines that really have nothing better.
 #[cfg(target_os = "linux")]
-fn runtime_dir_by_uid() -> Option<std::ffi::OsString> {
+fn runtime_dir_by_uid() -> Option<OsString> {
     use std::os::unix::fs::MetadataExt as _;
     let uid = rustix::process::getuid().as_raw();
     let path = PathBuf::from(format!("/run/user/{uid}"));
@@ -105,30 +102,8 @@ fn runtime_dir_by_uid() -> Option<std::ffi::OsString> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn runtime_dir_by_uid() -> Option<std::ffi::OsString> {
+fn runtime_dir_by_uid() -> Option<OsString> {
     None
-}
-
-/// The real environment, owned, so an [`Environment`] can borrow from it.
-#[derive(Debug, Clone, Default)]
-pub struct OwnedEnvironment {
-    pub runtime_dir: Option<std::ffi::OsString>,
-    pub tmpdir: Option<std::ffi::OsString>,
-    pub home: Option<std::ffi::OsString>,
-    pub local_app_data: Option<std::ffi::OsString>,
-    pub user: Option<String>,
-}
-
-impl OwnedEnvironment {
-    pub fn borrow(&self) -> Environment<'_> {
-        Environment {
-            runtime_dir: self.runtime_dir.as_deref(),
-            tmpdir: self.tmpdir.as_deref(),
-            home: self.home.as_deref(),
-            local_app_data: self.local_app_data.as_deref(),
-            user: self.user.as_deref(),
-        }
-    }
 }
 
 /// The longest a Unix socket path may be, including its terminating NUL.
@@ -166,7 +141,7 @@ pub const fn here() -> Host {
 /// fallbacks matter more than they look: a login shell over ssh often has no `XDG_RUNTIME_DIR`,
 /// and refusing to run there would make the agent unavailable in exactly the session most likely
 /// to want a command-line client.
-pub fn address_on(name: &str, host: Host, env: &Environment<'_>) -> Result<Address, Error> {
+pub fn address_on(name: &str, host: Host, env: &Environment) -> Result<Address, Error> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         // Refused rather than escaped. The name reaches a filesystem path on two platforms and a
         // machine-wide namespace on the third, and the failure mode of getting that wrong is an
@@ -179,11 +154,12 @@ pub fn address_on(name: &str, host: Host, env: &Environment<'_>) -> Result<Addre
             // One pipe namespace for the whole machine, so the name has to carry the user: two
             // people signed in to one Windows box are two agents, and without this they would be
             // one — sharing whatever the agent holds.
-            let user = env.user.unwrap_or("default");
+            let user = env.user.as_deref().unwrap_or("default");
             let dir = env
                 .local_app_data
+                .as_ref()
                 .map(PathBuf::from)
-                .or_else(|| env.tmpdir.map(PathBuf::from))
+                .or_else(|| env.tmpdir.as_ref().map(PathBuf::from))
                 .ok_or(Error::Homeless("neither LOCALAPPDATA nor TEMP is set"))?;
             Ok(Address {
                 endpoint: Endpoint::Pipe(format!("{name}-{user}")),
@@ -193,8 +169,9 @@ pub fn address_on(name: &str, host: Host, env: &Environment<'_>) -> Result<Addre
         Host::Linux => {
             let dir = env
                 .runtime_dir
+                .as_ref()
                 .map(PathBuf::from)
-                .or_else(|| env.home.map(|h| PathBuf::from(h).join(".cache")))
+                .or_else(|| env.home.as_ref().map(|h| PathBuf::from(h).join(".cache")))
                 .ok_or(Error::Homeless("neither XDG_RUNTIME_DIR nor HOME is set"))?;
             socket_address(&dir, name, host)
         }
@@ -204,8 +181,13 @@ pub fn address_on(name: &str, host: Host, env: &Environment<'_>) -> Result<Addre
             // account on the machine can see.
             let dir = env
                 .tmpdir
+                .as_ref()
                 .map(PathBuf::from)
-                .or_else(|| env.home.map(|h| PathBuf::from(h).join("Library/Caches")))
+                .or_else(|| {
+                    env.home
+                        .as_ref()
+                        .map(|h| PathBuf::from(h).join("Library/Caches"))
+                })
                 .ok_or(Error::Homeless("neither TMPDIR nor HOME is set"))?;
             socket_address(&dir, name, host)
         }

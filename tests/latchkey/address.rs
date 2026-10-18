@@ -5,11 +5,11 @@
 //! checked by whoever runs `cargo test`, not by whoever happens to own a Mac.
 
 use latchkey::{Endpoint, Environment, Error, Host, address_on};
-use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
-fn os(text: &str) -> &OsStr {
-    OsStr::new(text)
+fn os(text: &str) -> OsString {
+    OsString::from(text)
 }
 
 /// One row per environment. Each row is checked, and a failure names the row.
@@ -85,7 +85,7 @@ fn windows_names_the_pipe_after_the_user() {
         Host::Windows,
         &Environment {
             local_app_data: Some(os(r"C:\Users\ada\AppData\Local")),
-            user: Some("ada"),
+            user: Some("ada".to_owned()),
             ..Environment::default()
         },
     )
@@ -106,7 +106,7 @@ fn windows_names_the_pipe_after_the_user() {
             Host::Windows,
             &Environment {
                 local_app_data: Some(os(r"C:\x")),
-                user: Some(who),
+                user: Some(who.to_owned()),
                 ..Environment::default()
             },
         )

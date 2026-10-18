@@ -23,10 +23,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &name,
             latchkey::here(),
             &latchkey::Environment {
-                runtime_dir: Some(&dir),
-                tmpdir: Some(&dir),
-                local_app_data: Some(&dir),
-                user: Some("demo"),
+                runtime_dir: Some(dir.clone()),
+                tmpdir: Some(dir.clone()),
+                local_app_data: Some(dir),
+                user: Some("demo".to_owned()),
                 ..latchkey::Environment::default()
             },
         )?,

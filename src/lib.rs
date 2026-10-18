@@ -89,10 +89,12 @@
 
 pub mod address;
 pub mod find;
+#[cfg(all(unix, feature = "guard"))]
+pub mod guard;
 pub mod lock;
 pub mod serve;
 
-pub use address::{Address, Endpoint, Environment, Host, OwnedEnvironment, address_on, here};
+pub use address::{Address, Endpoint, Environment, Host, address_on, here};
 pub use find::spawn;
 #[cfg(unix)]
 pub use serve::into_fd;
@@ -117,14 +119,13 @@ impl Agent {
     /// it is restricted to ASCII letters, digits and `-`. Keep it short: on macOS the whole
     /// socket path has 104 bytes to fit in, and `TMPDIR` has already spent forty of them.
     pub fn new(name: &str) -> Result<Self, Error> {
-        let env = Environment::read();
-        Self::in_environment(name, here(), &env.borrow())
+        Self::in_environment(name, here(), &Environment::read())
     }
 
     /// The same, told where it is and what the environment says.
     ///
     /// For tests, and for a program that wants its agent somewhere specific.
-    pub fn in_environment(name: &str, host: Host, env: &Environment<'_>) -> Result<Self, Error> {
+    pub fn in_environment(name: &str, host: Host, env: &Environment) -> Result<Self, Error> {
         Ok(Self {
             address: address_on(name, host, env)?,
         })

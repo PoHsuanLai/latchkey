@@ -34,15 +34,15 @@ pub fn unique_name() -> String {
 /// The user is a parameter because on Windows it is part of the pipe name: a test that starts a
 /// child agent must address it with the same user the child was started with.
 pub fn agent_in(dir: &Path, name: &str, user: &str) -> Agent {
-    let dir = dir.as_os_str();
+    let dir = dir.as_os_str().to_owned();
     Agent::in_environment(
         name,
         latchkey::here(),
         &Environment {
-            runtime_dir: Some(dir),
-            tmpdir: Some(dir),
+            runtime_dir: Some(dir.clone()),
+            tmpdir: Some(dir.clone()),
             local_app_data: Some(dir),
-            user: Some(user),
+            user: Some(user.to_owned()),
             ..Environment::default()
         },
     )
