@@ -50,7 +50,7 @@ pub fn connect(at: &Address) -> Result<Option<Stream>, Error> {
         Endpoint::Pipe(pipe) => pipe
             .as_str()
             .to_ns_name::<GenericNamespaced>()
-            .map_err(|e| Error::Listen {
+            .map_err(|e| Error::Connect {
                 endpoint: at.endpoint.clone(),
                 cause: e,
             })?,
