@@ -107,7 +107,6 @@ use std::time::Duration;
 /// agree on the address even if something changes `TMPDIR` underneath them.
 #[derive(Debug, Clone)]
 pub struct Agent {
-    name: String,
     address: Address,
 }
 
@@ -127,13 +126,8 @@ impl Agent {
     /// For tests, and for a program that wants its agent somewhere specific.
     pub fn in_environment(name: &str, host: Host, env: &Environment<'_>) -> Result<Self, Error> {
         Ok(Self {
-            name: name.to_owned(),
             address: address_on(name, host, env)?,
         })
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
     }
 
     pub fn address(&self) -> &Address {
