@@ -8,7 +8,7 @@
 
 use crate::Error;
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Which platform's rules to apply.
 ///
@@ -140,7 +140,7 @@ impl OwnedEnvironment {
 pub const fn sun_path_limit(host: Host) -> usize {
     match host {
         Host::Mac => 104,
-        _ => 108,
+        Host::Linux | Host::Windows => 108,
     }
 }
 
@@ -174,39 +174,46 @@ pub fn address_on(name: &str, host: Host, env: &Environment<'_>) -> Result<Addre
         return Err(Error::BadName(name.to_owned()));
     }
 
-    if host == Host::Windows {
-        // One pipe namespace for the whole machine, so the name has to carry the user: two
-        // people signed in to one Windows box are two agents, and without this they would be
-        // one — sharing whatever the agent holds.
-        let user = env.user.unwrap_or("default");
-        let dir = env
-            .local_app_data
-            .map(PathBuf::from)
-            .or_else(|| env.tmpdir.map(PathBuf::from))
-            .ok_or(Error::Homeless("neither LOCALAPPDATA nor TEMP is set"))?;
-        return Ok(Address {
-            endpoint: Endpoint::Pipe(format!("{name}-{user}")),
-            lock: dir.join(name).join("agent.lock"),
-        });
+    match host {
+        Host::Windows => {
+            // One pipe namespace for the whole machine, so the name has to carry the user: two
+            // people signed in to one Windows box are two agents, and without this they would be
+            // one — sharing whatever the agent holds.
+            let user = env.user.unwrap_or("default");
+            let dir = env
+                .local_app_data
+                .map(PathBuf::from)
+                .or_else(|| env.tmpdir.map(PathBuf::from))
+                .ok_or(Error::Homeless("neither LOCALAPPDATA nor TEMP is set"))?;
+            Ok(Address {
+                endpoint: Endpoint::Pipe(format!("{name}-{user}")),
+                lock: dir.join(name).join("agent.lock"),
+            })
+        }
+        Host::Linux => {
+            let dir = env
+                .runtime_dir
+                .map(PathBuf::from)
+                .or_else(|| env.home.map(|h| PathBuf::from(h).join(".cache")))
+                .ok_or(Error::Homeless("neither XDG_RUNTIME_DIR nor HOME is set"))?;
+            socket_address(&dir, name, host)
+        }
+        Host::Mac => {
+            // macOS has no XDG_RUNTIME_DIR at all. Its `TMPDIR` is per-user and private, which is
+            // the property that matters; `/tmp` would put the socket somewhere every other
+            // account on the machine can see.
+            let dir = env
+                .tmpdir
+                .map(PathBuf::from)
+                .or_else(|| env.home.map(|h| PathBuf::from(h).join("Library/Caches")))
+                .ok_or(Error::Homeless("neither TMPDIR nor HOME is set"))?;
+            socket_address(&dir, name, host)
+        }
     }
+}
 
-    let dir = match host {
-        Host::Linux => env
-            .runtime_dir
-            .map(PathBuf::from)
-            .or_else(|| env.home.map(|h| PathBuf::from(h).join(".cache")))
-            .ok_or(Error::Homeless("neither XDG_RUNTIME_DIR nor HOME is set"))?,
-        // macOS has no XDG_RUNTIME_DIR at all. Its `TMPDIR` is per-user and private, which is
-        // the property that matters; `/tmp` would put the socket somewhere every other account
-        // on the machine can see.
-        Host::Mac => env
-            .tmpdir
-            .map(PathBuf::from)
-            .or_else(|| env.home.map(|h| PathBuf::from(h).join("Library/Caches")))
-            .ok_or(Error::Homeless("neither TMPDIR nor HOME is set"))?,
-        Host::Windows => unreachable!("handled above"),
-    };
-
+/// The Unix socket and lock for `name` under `dir`, refused if the socket path will not fit.
+fn socket_address(dir: &Path, name: &str, host: Host) -> Result<Address, Error> {
     let home = dir.join(name);
     let socket = home.join("agent.sock");
     let length = socket.as_os_str().len() + 1; // the NUL
