@@ -40,9 +40,6 @@ test-agent = []
 unsafe_code = "forbid"
 missing_debug_implementations = "warn"
 
-[lints.clippy]
-todo = "allow"
-
 # The agent the cross-process tests drive. A binary target rather than only the example because a
 # `cargo nextest archive` carries binary targets and drops examples, so the tests could not find
 # an example once the archive was extracted elsewhere. `examples/agent.rs` stays the user-facing
