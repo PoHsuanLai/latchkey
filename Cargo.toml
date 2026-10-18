@@ -23,8 +23,8 @@ interprocess = "2.4"
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "net", "process"] }
 # Only for the `guard` feature: the caller check (who is on the other end of a socket) is
 # peephole's, by git tag like every consumer of it.
-peephole = { git = "https://github.com/PoHsuanLai/peephole", tag = "v0.1.6", optional = true }
-peephole-core = { git = "https://github.com/PoHsuanLai/peephole", tag = "v0.1.6", optional = true }
+peephole = { git = "https://github.com/PoHsuanLai/peephole", tag = "v0.1.7", optional = true }
+peephole-core = { git = "https://github.com/PoHsuanLai/peephole", tag = "v0.1.7", optional = true }
 
 # Windows only: the pipe's security descriptor, which `interprocess` takes as a wide C string.
 [target.'cfg(windows)'.dependencies]
@@ -38,7 +38,7 @@ latchkey = { path = ".", features = ["test-agent", "guard"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 # `fake` is the seam that pins a process that is only a claim, for the guard's tests.
-peephole = { git = "https://github.com/PoHsuanLai/peephole", tag = "v0.1.6", features = ["fake"] }
+peephole = { git = "https://github.com/PoHsuanLai/peephole", tag = "v0.1.7", features = ["fake"] }
 
 [features]
 # Builds the `latchkey-test-agent` binary the cross-process tests drive. Not for users.
