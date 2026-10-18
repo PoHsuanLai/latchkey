@@ -7,6 +7,8 @@
 
 mod across_processes;
 mod address;
+#[cfg(unix)]
+mod guard;
 mod helpers;
 mod lifecycle;
 

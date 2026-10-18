@@ -21,6 +21,10 @@ interprocess = "2.4"
 # "the directory is the authentication" true rather than hoped.
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "net", "process"] }
+# Only for the `guard` feature: the caller check (who is on the other end of a socket) is
+# peephole's, by git tag like every consumer of it.
+peephole = { git = "https://github.com/PoHsuanLai/peephole", tag = "v0.1.6", optional = true }
+peephole-core = { git = "https://github.com/PoHsuanLai/peephole", tag = "v0.1.6", optional = true }
 
 # Windows only: the pipe's security descriptor, which `interprocess` takes as a wide C string.
 [target.'cfg(windows)'.dependencies]
@@ -30,11 +34,17 @@ widestring = "1"
 tempfile = "3"
 # The test agent below is built only with this feature. Naming it here switches it on for this
 # crate's own tests, while `cargo install latchkey` (no dev-dependencies) never builds it.
-latchkey = { path = ".", features = ["test-agent"] }
+latchkey = { path = ".", features = ["test-agent", "guard"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+# `fake` is the seam that pins a process that is only a claim, for the guard's tests.
+peephole = { git = "https://github.com/PoHsuanLai/peephole", tag = "v0.1.6", features = ["fake"] }
 
 [features]
 # Builds the `latchkey-test-agent` binary the cross-process tests drive. Not for users.
 test-agent = []
+# `latchkey::guard`: the guards of a socket that every local account can reach (Unix only).
+guard = ["dep:peephole", "dep:peephole-core"]
 
 [lints.rust]
 unsafe_code = "forbid"
