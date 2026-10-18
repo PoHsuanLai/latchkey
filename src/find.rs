@@ -37,7 +37,7 @@ const KNOCK: Duration = Duration::from_secs(2);
 /// Nothing is removed here, ever. A client that tidies races every other client doing the same —
 /// see [`crate::lock`] — so clearing a stale socket is [`crate::serve::listen`]'s job, under the
 /// lock that proves it is nobody's.
-pub fn connect(at: &Address) -> Result<Option<Stream>, Error> {
+pub(crate) fn connect(at: &Address) -> Result<Option<Stream>, Error> {
     let name = match &at.endpoint {
         Endpoint::Socket(path) => {
             if !path.exists() {
@@ -147,40 +147,27 @@ fn busy(e: &std::io::Error) -> bool {
 ///
 /// `wait` is process startup, not the agent's first piece of work — an agent should take its
 /// lock and open its door before it does anything slow, precisely so this number can stay small.
-pub fn connect_or_start(
+pub(crate) fn connect_or_start(
     at: &Address,
     start: impl FnOnce() -> Result<(), Error>,
     wait: Duration,
 ) -> Result<Stream, Error> {
     match connect(at) {
         Ok(Some(live)) => return Ok(live),
-        Ok(None) => {}
-        // Busy means an agent is alive and occupied, so starting one would start a rival. Fall
-        // through to the waiting loop without calling `start`.
-        Err(Error::Busy) => return wait_for(at, wait),
+        Ok(None) => start()?,
+        // Busy means an agent is alive and occupied, so starting one would start a rival. Go
+        // straight to the waiting loop without calling `start`.
+        Err(Error::Busy) => {}
         Err(other) => return Err(other),
     }
-    start()?;
-
-    let deadline = Instant::now() + wait;
-    loop {
-        match connect(at) {
-            Ok(Some(live)) => return Ok(live),
-            // Still busy, still alive: keep knocking rather than give up on it.
-            Ok(None) | Err(Error::Busy) => {}
-            Err(other) => return Err(other),
-        }
-        if Instant::now() >= deadline {
-            // Said rather than waited out. A client blocked for ever on an agent that failed to
-            // start is worse than one that gives up, because the second can be retried by a
-            // person who can also read why.
-            return Err(Error::NeverAnswered(wait));
-        }
-        std::thread::sleep(RETRY);
-    }
+    wait_for(at, wait)
 }
 
-/// Knock until an agent that is known to exist can actually talk.
+/// Knock until an agent that is known to exist, or was just started, can actually talk.
+///
+/// Busy keeps the knocking going rather than giving up on an agent that is alive. Said rather than
+/// waited out: a client blocked for ever on an agent that failed to start is worse than one that
+/// gives up, because the second can be retried by a person who can also read why.
 fn wait_for(at: &Address, wait: Duration) -> Result<Stream, Error> {
     let deadline = Instant::now() + wait;
     loop {

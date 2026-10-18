@@ -60,7 +60,7 @@ fn demo(world: &World, command: &str) -> Command {
 /// `Command::output()` would be the obvious thing and is the wrong thing here. It waits for the
 /// child's stdout to reach end-of-file, and on Windows the agent the client starts inherits that
 /// pipe and holds it open for as long as it runs — so the read finishes only when the *agent*
-/// stops, which is never. See `latchkey::find::spawn` for why the standard library gives no
+/// stops, which is never. See `latchkey::spawn` for why the standard library gives no
 /// stable way to prevent the inheritance.
 ///
 /// A file has no end-of-file to wait for, so redirecting there decouples the two. That is also

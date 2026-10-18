@@ -67,11 +67,6 @@ impl Listening {
     pub fn standing(&self) -> lock::Standing {
         self.lock.standing()
     }
-
-    /// Where this agent is listening, for printing or passing to a child.
-    pub fn address(&self) -> Option<&std::path::Path> {
-        self.socket.as_deref()
-    }
 }
 
 impl Drop for Listening {
@@ -92,7 +87,7 @@ impl Drop for Listening {
 /// Returns [`Error::AlreadyRunning`] if another process holds the lock. That is the answer to
 /// "should I start?", and it is a kernel fact rather than a guess about a file — see
 /// [`crate::lock`] for the two races that reading the filesystem instead would open.
-pub fn listen(at: &Address) -> Result<Listening, Error> {
+pub(crate) fn listen(at: &Address) -> Result<Listening, Error> {
     let held = lock::take(&at.lock)?;
 
     let socket = match &at.endpoint {
